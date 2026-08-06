@@ -188,6 +188,34 @@ run_translate = _with_cpu_fallback(
 )
 
 
+def _translate_many(texts: List[str], progress) -> tuple:
+    """Translate several lines, reporting progress where it is slow.
+
+    On the GPU everything goes in one call: it finishes quickly, and each call
+    reserves quota up front so a batch is much cheaper than one call per line.
+    On CPU a line takes tens of seconds, so there the loop runs one at a time
+    and reports which line it is on -- otherwise the button looks dead.
+    """
+    if HAS_ZEROGPU:
+        try:
+            progress(0.15, desc=f"Translating {len(texts)} lines on GPU")
+            return _translate_gpu(texts, None), False
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it's quota
+            if not _is_quota_error(exc):
+                raise
+            print(f"[zerogpu] quota exhausted, falling back to CPU: {exc}")
+
+    device = "cpu" if HAS_ZEROGPU else None
+    results: List[str] = []
+    for index, text in enumerate(texts):
+        progress(
+            index / max(len(texts), 1),
+            desc=f"Translating line {index + 1} of {len(texts)} on CPU",
+        )
+        results.append(translate.translate_batch([text], device=device)[0])
+    return results, HAS_ZEROGPU
+
+
 # --------------------------------------------------------------------------- #
 # Step handlers
 # --------------------------------------------------------------------------- #
@@ -295,6 +323,9 @@ def translate_line(text: str, index: int, translations: Optional[List[str]]):
     if not (text or "").strip():
         raise gr.Error("Nothing to translate on this line.")
 
+    # Immediate acknowledgement; a line takes tens of seconds on CPU.
+    yield gr.skip(), gr.skip(), f"Translating line {index + 1}…"
+
     try:
         results, used_cpu = run_translate([text])
     except Exception as exc:  # noqa: BLE001 - surfaced to the user as-is
@@ -307,7 +338,7 @@ def translate_line(text: str, index: int, translations: Optional[List[str]]):
     updated[index] = english
 
     note = " (GPU quota spent — ran on CPU.)" if used_cpu else ""
-    return english, updated, f"Translated line {index + 1}.{note}"
+    yield english, updated, f"Translated line {index + 1}.{note}"
 
 
 def translate_all(
@@ -336,11 +367,21 @@ def translate_all(
 
     pending = [i for i, text in enumerate(texts) if text.strip() and not current[i].strip()]
     if not pending:
-        return rows, texts, current, "Every line already has a translation."
+        yield rows, texts, current, "Every line already has a translation."
+        return
 
-    progress(0.1, desc=f"Translating {len(pending)} lines")
+    # Say something before the first line is done: on CPU each takes tens of
+    # seconds, and without this the click looks like it did nothing. gr.skip()
+    # leaves the row state alone so this does not re-render the whole list.
+    yield (
+        gr.skip(),
+        gr.skip(),
+        gr.skip(),
+        f"Translating {len(pending)} lines… this can take a while on CPU.",
+    )
+
     try:
-        results, used_cpu = run_translate([texts[i] for i in pending])
+        results, used_cpu = _translate_many([texts[i] for i in pending], progress)
     except Exception as exc:  # noqa: BLE001 - surfaced to the user as-is
         raise gr.Error(f"Translation failed: {exc}")
 
@@ -354,7 +395,7 @@ def translate_all(
 
     progress(1.0, desc="Done")
     note = " (GPU quota spent — ran on CPU.)" if used_cpu else ""
-    return refreshed, texts, current, f"Translated {len(pending)} lines.{note}"
+    yield refreshed, texts, current, f"Translated {len(pending)} lines.{note}"
 
 
 def build_download(
@@ -561,10 +602,13 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
             english.change(
                 save_translation, inputs=[english, trans_state], outputs=[trans_state]
             )
+            # `yield from` keeps this a generator *function*, which is what
+            # Gradio checks for; a lambda returning a generator would not stream.
+            def do_translate(text, translations, idx=index):
+                yield from translate_line(text, idx, translations)
+
             translate_btn.click(
-                lambda text, translations, idx=index: translate_line(
-                    text, idx, translations
-                ),
+                do_translate,
                 inputs=[box, trans_state],
                 outputs=[english, trans_state, status],
             )
