@@ -22,6 +22,17 @@ import export
 import models
 import pipeline
 
+try:  # Only present on Hugging Face ZeroGPU Spaces.
+    import spaces
+
+    on_gpu = spaces.GPU(duration=120)
+except ImportError:  # pragma: no cover - local and CPU deployments
+
+    def on_gpu(fn):
+        """No-op stand-in so the same code runs off-Space."""
+        return fn
+
+
 BOX_COLOR = (37, 150, 190)
 MAX_UPLOAD_PIXELS = 40_000_000  # ~40MP; bigger inputs are downscaled on ingest
 
@@ -78,6 +89,32 @@ def _clamp_upload(image: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
+# GPU-side work
+#
+# On ZeroGPU a device is attached only for the duration of an @spaces.GPU call,
+# so the ONNX sessions -- which bind to the device when they are built -- have to
+# be created inside these functions rather than at import. Model *downloads* are
+# resolved by the callers beforehand, so no GPU time is spent on network I/O.
+# --------------------------------------------------------------------------- #
+
+
+@on_gpu
+def _detect_on_gpu(bgr: np.ndarray, flatten: bool, line_model: str):
+    """Optionally flatten the page, then detect its lines."""
+    changed = None
+    if flatten:
+        bgr, changed = pipeline.dewarp(bgr, line_model=line_model)
+    page = pipeline.detect(bgr, line_model=line_model)
+    return page.image, page.angle, page.lines, changed
+
+
+@on_gpu
+def _ocr_on_gpu(image: np.ndarray, lines, ocr_model: str):
+    """Recognise the given lines."""
+    return pipeline.ocr(image, lines, ocr_model=ocr_model)
+
+
+# --------------------------------------------------------------------------- #
 # Step handlers
 # --------------------------------------------------------------------------- #
 
@@ -95,29 +132,30 @@ def detect_lines(
     rgb = _clamp_upload(np.asarray(annotation["image"]))
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
-    note = ""
-    if flatten:
-        progress(0.2, desc="Checking page curvature")
-        bgr, changed = pipeline.dewarp(bgr)
-        note = " Page was flattened." if changed else " Page looked flat already."
+    progress(0.2, desc="Fetching model" if flatten else "Preparing")
+    line_model = models.line_model_path()  # outside the GPU call: no device time
 
-    progress(0.4, desc="Detecting lines (first run also downloads the model)")
+    progress(0.4, desc="Detecting lines")
     try:
-        page = pipeline.detect(bgr)
+        image, angle, lines, changed = _detect_on_gpu(bgr, flatten, line_model)
     except ValueError as exc:
         raise gr.Error(f"Line detection failed: {exc}")
 
-    boxes = pipeline.lines_to_boxes(page.lines)
-    state = {"image": page.image, "lines": page.lines, "ids": [b["id"] for b in boxes]}
+    note = ""
+    if changed is not None:
+        note = " Page was flattened." if changed else " Page looked flat already."
+
+    boxes = pipeline.lines_to_boxes(lines)
+    state = {"image": image, "lines": lines, "ids": [b["id"] for b in boxes]}
 
     progress(1.0, desc="Done")
     return (
         {
-            "image": cv2.cvtColor(page.image, cv2.COLOR_BGR2RGB),
+            "image": cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
             "boxes": _to_annotator_boxes(boxes),
         },
         state,
-        f"Found {len(boxes)} lines, deskewed by {page.angle:.2f}°.{note} "
+        f"Found {len(boxes)} lines, deskewed by {angle:.2f}°.{note} "
         "Correct the boxes, then transcribe.",
     )
 
@@ -140,10 +178,9 @@ def run_ocr(
     if not lines:
         raise gr.Error("Every box was empty; nothing to transcribe.")
 
+    ocr_model = models.ocr_model_dir(model_name)  # outside the GPU call
     progress(0.3, desc=f"Transcribing {len(lines)} lines")
-    texts = pipeline.ocr(
-        state["image"], lines, ocr_model=models.ocr_model_dir(model_name)
-    )
+    texts = _ocr_on_gpu(state["image"], lines, ocr_model)
 
     progress(1.0, desc="Done")
     return "\n".join(texts), f"Transcribed {len(texts)} lines. Edit freely below."

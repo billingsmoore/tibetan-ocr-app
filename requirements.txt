@@ -5,7 +5,10 @@ gradio>=6.0
 gradio_image_annotation>=0.5
 huggingface_hub>=0.30
 
-onnxruntime>=1.17
+# onnxruntime-gpu so the Space's ZeroGPU device is actually used; it also
+# carries the CPU provider, so it degrades gracefully on machines without CUDA.
+# For a purely local CPU install, plain `onnxruntime` is a much smaller download.
+onnxruntime-gpu>=1.17
 opencv-python-headless>=4.9
 numpy>=1.26
 scipy>=1.11
