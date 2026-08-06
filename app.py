@@ -459,8 +459,15 @@ through the whole pipeline quickly.
 # needs the full column width to be legible, and a fixed height alone would do
 # nothing. The drag handle lets you trade height against the rest of the page.
 CSS = """
-#page-pane { resize: vertical; overflow: auto; min-height: 260px; }
+#page-pane { resize: vertical; overflow: auto; min-height: 520px; flex: 0 0 auto; }
 #page-pane img { image-rendering: -webkit-optimize-contrast; }
+
+/* The overlay boxes are positioned against the rendered image, so any resize of
+   this pane drags them along with it. Mounting the transcription rows below
+   forces exactly that reflow, and the default transition animates the squeeze --
+   which reads as the boxes mysteriously shrinking away after transcribing.
+   Pin the pane and let it change size only when the drag handle is used. */
+#page-pane, #page-pane * { transition: none !important; animation: none !important; }
 
 /* Each text field sits directly under the strip of page it came from, so the
    correspondence needs no clicking to discover. */
