@@ -478,7 +478,7 @@ CSS = """
 """
 
 CREDITS = """
-### Built on other people's work
+### Acknowledgements
 
 This app is a thin interactive layer over models and code created by others.
 
