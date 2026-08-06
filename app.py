@@ -269,7 +269,7 @@ def run_ocr(
     progress(0.9, desc="Preparing line previews")
     crops = pipeline.line_previews(state["image"], lines)
     rows = [
-        {"text": text, "crop": cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)}
+        {"text": text, "target": "", "crop": cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)}
         for text, crop in zip(texts, crops)
     ]
 
@@ -308,6 +308,53 @@ def translate_line(text: str, index: int, translations: Optional[List[str]]):
 
     note = " (GPU quota spent — ran on CPU.)" if used_cpu else ""
     return english, updated, f"Translated line {index + 1}.{note}"
+
+
+def translate_all(
+    edits: Optional[List[str]],
+    rows: Optional[List[dict]],
+    translations: Optional[List[str]],
+    progress=gr.Progress(),
+):
+    """Translate every line that doesn't have a translation yet.
+
+    Lines already translated -- by the per-line button, or by hand -- are left
+    alone, so this fills gaps rather than overwriting work. The untranslated
+    lines go in a single batched call: on ZeroGPU each call reserves quota up
+    front, so one batch costs far less than one call per line.
+    """
+    if not rows:
+        raise gr.Error("Transcribe the page first.")
+
+    texts = list(edits or [row.get("text", "") for row in rows])
+    while len(texts) < len(rows):
+        texts.append(rows[len(texts)].get("text", ""))
+
+    current = list(translations or [])
+    while len(current) < len(texts):
+        current.append("")
+
+    pending = [i for i, text in enumerate(texts) if text.strip() and not current[i].strip()]
+    if not pending:
+        return rows, texts, current, "Every line already has a translation."
+
+    progress(0.1, desc=f"Translating {len(pending)} lines")
+    try:
+        results, used_cpu = run_translate([texts[i] for i in pending])
+    except Exception as exc:  # noqa: BLE001 - surfaced to the user as-is
+        raise gr.Error(f"Translation failed: {exc}")
+
+    for slot, index in enumerate(pending):
+        if slot < len(results):
+            current[index] = results[slot]
+
+    refreshed = [
+        {**row, "text": texts[i], "target": current[i]} for i, row in enumerate(rows)
+    ]
+
+    progress(1.0, desc="Done")
+    note = " (GPU quota spent — ran on CPU.)" if used_cpu else ""
+    return refreshed, texts, current, f"Translated {len(pending)} lines.{note}"
 
 
 def build_download(
@@ -439,7 +486,9 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
         height=560,
     )
 
-    gr.Markdown("### Transcription")
+    with gr.Row():
+        gr.Markdown("### Transcription", container=False)
+        translate_all_btn = gr.Button("Translate all", size="sm", scale=0)
 
     # Two separate states on purpose. `rows` triggers the re-render below, so it
     # must only change when OCR runs; `edits` holds what you type. If typing fed
@@ -481,7 +530,9 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
                     )
                     translate_btn = gr.Button("Translate", size="sm", scale=1)
                 english = gr.Textbox(
-                    value="",
+                    # Read back from the row so a re-render (Translate all)
+                    # keeps translations already produced.
+                    value=row.get("target", ""),
                     show_label=False,
                     container=False,
                     lines=1,
@@ -547,6 +598,11 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
         run_ocr,
         inputs=[annotator, page_state, model_dd],
         outputs=[rows_state, edits_state, status],
+    )
+    translate_all_btn.click(
+        translate_all,
+        inputs=[edits_state, rows_state, trans_state],
+        outputs=[rows_state, edits_state, trans_state, status],
     )
     download_btn.click(
         build_download,
