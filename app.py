@@ -137,7 +137,8 @@ def _detect_work(bgr: np.ndarray, flatten: bool, line_model: str, providers):
     if flatten:
         bgr, changed = pipeline.dewarp(bgr, line_model=line_model, providers=providers)
     page = pipeline.detect(bgr, line_model=line_model, providers=providers)
-    return page.image, page.angle, page.lines, changed
+    active = pipeline.line_session_providers(line_model, providers=providers)
+    return page.image, page.angle, page.lines, changed, active
 
 
 def _ocr_work(image: np.ndarray, lines, ocr_model: str, providers):
@@ -178,7 +179,9 @@ def detect_lines(
 
     progress(0.4, desc="Detecting lines")
     try:
-        (image, angle, lines, changed), used_cpu = run_detect(bgr, flatten, line_model)
+        (image, angle, lines, changed, active), used_cpu = run_detect(
+            bgr, flatten, line_model
+        )
     except ValueError as exc:
         raise gr.Error(f"Line detection failed: {exc}")
 
@@ -187,6 +190,9 @@ def detect_lines(
         note = " Page was flattened." if changed else " Page looked flat already."
     if used_cpu:
         note += " (GPU quota spent — ran on CPU, slower.)"
+    elif HAS_ZEROGPU:
+        on = "GPU" if any("CUDA" in p or "Tensorrt" in p for p in active) else "CPU"
+        note += f" (ran on {on}: {active[0]})"
 
     boxes = pipeline.lines_to_boxes(lines)
     state = {"image": image, "lines": lines, "ids": [b["id"] for b in boxes]}
@@ -368,6 +374,10 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
                     lines=1,
                     max_lines=4,
                     autoscroll=False,
+                    # Explicit: inside gr.render Gradio does not infer
+                    # interactivity from usage, so a Textbox given a value
+                    # renders read-only unless told otherwise.
+                    interactive=True,
                 )
 
             def save(new_text, edits, idx=index):

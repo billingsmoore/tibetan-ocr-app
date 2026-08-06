@@ -108,6 +108,19 @@ def _get_line_detector(
     return _line_detectors[key]
 
 
+def line_session_providers(
+    line_model: str, patch_size: int = DEFAULT_PATCH_SIZE, providers=None
+) -> List[str]:
+    """Execution providers the line-detection session is actually using.
+
+    ONNX Runtime silently falls back to CPU when a requested provider cannot
+    initialise, so the only way to know where inference ran is to ask the
+    session after the fact.
+    """
+    detector = _get_line_detector(line_model, patch_size, providers)
+    return list(detector._inference.get_providers())
+
+
 def _detection_scale(width: int, height: int, patch_size: int) -> float:
     """Pick the largest scale <= 1.0 whose tile grid fits in MAX_DETECT_TILES."""
     scale = 1.0
