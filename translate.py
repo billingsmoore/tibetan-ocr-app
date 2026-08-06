@@ -41,11 +41,15 @@ def prefetch() -> None:
     _load()
 
 
-def translate_batch(texts: List[str]) -> List[str]:
+def translate_batch(texts: List[str], device: str | None = None) -> List[str]:
     """Translate Tibetan strings to English, preserving input order.
 
-    Runs on CUDA when a device is present -- which on a ZeroGPU Space means
-    inside an ``@spaces.GPU`` call -- and on CPU otherwise.
+    ``device`` must be given explicitly when running outside an ``@spaces.GPU``
+    call on a ZeroGPU Space. Autodetection is not safe there: ZeroGPU's emulation
+    reports ``torch.cuda.is_available()`` as True in the main process so that
+    libraries configure themselves for GPU, but actually touching CUDA outside an
+    allocation trips its low-level init guard. Passing "cpu" keeps the fallback
+    path away from CUDA entirely.
     """
     if not texts:
         return []
@@ -53,7 +57,8 @@ def translate_batch(texts: List[str]) -> List[str]:
     import torch
 
     model, tokenizer = _load()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
 
     inputs = tokenizer(

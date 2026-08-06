@@ -155,23 +155,36 @@ def _ocr_work(image: np.ndarray, lines, ocr_model: str, providers):
     return pipeline.ocr(image, lines, ocr_model=ocr_model, providers=providers)
 
 
-def _translate_work(texts):
+def _translate_work(texts, device):
     """Translate Tibetan lines to English."""
-    return translate.translate_batch(texts)
+    return translate.translate_batch(texts, device=device)
 
+
+# Detection and recognition are ONNX, and the session reports
+# CPUExecutionProvider on this Space even inside a GPU allocation -- CUDA never
+# initialises for them. Wrapping them in @spaces.GPU therefore reserved quota to
+# do CPU work, which is what starved translation. They now run on CPU directly.
+ONNX_PROVIDERS = CPU_PROVIDERS if HAS_ZEROGPU else None
 
 if HAS_ZEROGPU:
-    _detect_gpu = spaces.GPU(duration=120)(_detect_work)
-    _ocr_gpu = spaces.GPU(duration=120)(_ocr_work)
-    _translate_gpu = spaces.GPU(duration=120)(_translate_work)
-else:  # pragma: no cover - the dispatcher never calls these off-Space
-    _detect_gpu = _ocr_gpu = _translate_gpu = None
+    # Translation is torch, genuinely uses the device, and satisfies ZeroGPU's
+    # requirement that a Space declare at least one GPU function.
+    _translate_gpu = spaces.GPU(duration=60)(_translate_work)
+else:  # pragma: no cover - the dispatcher never calls this off-Space
+    _translate_gpu = None
 
-run_detect = _with_cpu_fallback(_detect_gpu, _detect_work)
-run_ocr_work = _with_cpu_fallback(_ocr_gpu, _ocr_work)
-# Torch selects its own device, so no provider argument is threaded through.
+
+def run_detect(*args):
+    return _detect_work(*args, ONNX_PROVIDERS), False
+
+
+def run_ocr_work(*args):
+    return _ocr_work(*args, ONNX_PROVIDERS), False
+
+
+# On fallback the device is pinned rather than autodetected: see translate.py.
 run_translate = _with_cpu_fallback(
-    _translate_gpu, _translate_work, gpu_extra=(), cpu_extra=()
+    _translate_gpu, _translate_work, gpu_extra=(None,), cpu_extra=("cpu",)
 )
 
 
