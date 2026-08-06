@@ -46,7 +46,7 @@ Config.py        string -> enum tables
 BDRC/            upstream inference code (6 modules, unmodified except as noted)
 Assets/Fonts/    TibMachUni, embedded into generated PDFs
 vendor/pyewts/   vendored EWTS <-> Unicode converter
-examples/        a sample pecha page
+examples/        a real pecha page, plus a synthetic sample and its generator
 ```
 
 ## How it works
@@ -115,6 +115,17 @@ python -m venv .venv
 
 `verify_pipeline.py` is a smoke test: it runs the full chain on
 `examples/I1ER9510006.jpg` and writes an overlay image plus the boxes as JSON.
+
+**Load sample page** in the app uses `examples/sample_page.png`, a synthetic
+folio of the refuge and bodhicitta verse. It exists because the real example is
+a dense woodblock print that is slow to work through: the sample detects in ~6s
+and transcribes in ~2s against ~13s and ~10s, and its short lines translate
+quickly too. Regenerate or edit it with `python examples/make_sample.py`.
+
+The text is deliberately ubiquitous, so output is easy to check by eye. The
+recogniser reads it near-perfectly despite being trained on woodblock prints:
+three of five lines exact, one missing only the ornamental `༄༅།` head mark, one
+differing by a single near-identical diacritic.
 
 ## Licensing
 

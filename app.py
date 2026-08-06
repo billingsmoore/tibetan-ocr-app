@@ -278,6 +278,18 @@ def run_ocr(
     return rows, list(texts), f"Transcribed {len(texts)} lines.{note} Edit freely below."
 
 
+SAMPLE_PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "examples", "sample_page.png")
+
+
+def load_sample():
+    """Put the synthetic sample page into the annotator."""
+    image = cv2.imread(SAMPLE_PAGE)
+    if image is None:
+        raise gr.Error("Sample page is missing from this deployment.")
+    return {"image": cv2.cvtColor(image, cv2.COLOR_BGR2RGB), "boxes": []}
+
+
 def translate_line(text: str, index: int, translations: Optional[List[str]]):
     """Translate one line and store the result alongside the others."""
     if not (text or "").strip():
@@ -350,6 +362,9 @@ boxes &nbsp;→&nbsp; **4.** Transcribe &nbsp;→&nbsp; **5.** Edit and download
 Drag to draw a missing line, drag its handles to resize, select and press
 Delete to remove one. Detection often boxes a smudge in the margin -- deleting
 those before transcribing keeps the output clean.
+
+No page to hand? **Load sample page** gives you a short, clean one that runs
+through the whole pipeline quickly.
 """
 
 # A pecha page is roughly 4:1, so its displayed height is width/4 -- the page
@@ -391,6 +406,7 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
     gr.Markdown(INTRO)
 
     with gr.Row():
+        sample_btn = gr.Button("Load sample page")
         detect_btn = gr.Button("Detect lines", variant="primary")
         ocr_btn = gr.Button("Transcribe these lines", variant="primary")
         flatten_cb = gr.Checkbox(
@@ -521,6 +537,7 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
 
     content.change(_format_visibility, inputs=[content], outputs=[fmt])
 
+    sample_btn.click(load_sample, outputs=[annotator])
     detect_btn.click(
         detect_lines,
         inputs=[annotator, flatten_cb],
