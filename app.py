@@ -182,12 +182,23 @@ def run_ocr(
     progress(0.3, desc=f"Transcribing {len(lines)} lines")
     texts = _ocr_on_gpu(state["image"], lines, ocr_model)
 
+    # Crop the same lines again on the CPU so each text row can show the strip of
+    # page it came from. Cropping is cheap next to recognition, and this keeps
+    # large image data out of the GPU call's return value.
+    progress(0.9, desc="Preparing line previews")
+    crops = pipeline.crop_lines(state["image"], lines)
+    rows = [
+        {"text": text, "crop": cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)}
+        for text, crop in zip(texts, crops)
+    ]
+
     progress(1.0, desc="Done")
-    return "\n".join(texts), f"Transcribed {len(texts)} lines. Edit freely below."
+    return rows, list(texts), f"Transcribed {len(texts)} lines. Edit freely below."
 
 
-def build_download(text: str, fmt: str):
+def build_download(edits: Optional[List[str]], fmt: str):
     """Write the edited transcription to a temp file for download."""
+    text = "\n".join(edits or [])
     if not text.strip():
         raise gr.Error("Nothing to download yet.")
     tmp = tempfile.NamedTemporaryFile(
@@ -218,6 +229,12 @@ those before transcribing keeps the output clean.
 CSS = """
 #page-pane { resize: vertical; overflow: auto; min-height: 260px; }
 #page-pane img { image-rendering: -webkit-optimize-contrast; }
+
+/* Each text field sits directly under the strip of page it came from, so the
+   correspondence needs no clicking to discover. */
+.line-strip img { object-fit: contain; width: 100%; background: transparent; }
+.line-strip { margin-bottom: 2px; opacity: 0.85; }
+.line-strip:hover { opacity: 1; }
 """
 
 CREDITS = """
@@ -275,19 +292,55 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
         height=560,
     )
 
+    gr.Markdown("### Transcription")
+
+    # Two separate states on purpose. `rows` triggers the re-render below, so it
+    # must only change when OCR runs; `edits` holds what you type. If typing fed
+    # back into a render input, every keystroke would rebuild the components and
+    # steal focus mid-word.
+    rows_state = gr.State([])
+    edits_state = gr.State([])
+
+    @gr.render(inputs=rows_state)
+    def render_transcription(rows):
+        if not rows:
+            gr.Markdown("_Detect lines and transcribe to see the text here._")
+            return
+
+        for index, row in enumerate(rows):
+            with gr.Group():
+                gr.Image(
+                    value=row["crop"],
+                    show_label=False,
+                    interactive=False,
+                    container=False,
+                    height=54,
+                    elem_classes=["line-strip"],
+                )
+                box = gr.Textbox(
+                    value=row["text"],
+                    show_label=False,
+                    container=False,
+                    lines=1,
+                    max_lines=4,
+                    autoscroll=False,
+                )
+
+            def save(new_text, edits, idx=index):
+                edits = list(edits or [])
+                while len(edits) <= idx:
+                    edits.append("")
+                edits[idx] = new_text
+                return edits
+
+            box.change(save, inputs=[box, edits_state], outputs=[edits_state])
+
     with gr.Row():
-        transcription = gr.Textbox(
-            label="Transcription (editable) — one row per detected line",
-            lines=16,
-            max_lines=40,
-            buttons=["copy"],
-            placeholder="Transcribed text appears here, one row per line.",
-            scale=3,
+        fmt = gr.Radio(
+            choices=["txt", "docx", "pdf"], value="txt", label="Format", scale=2
         )
-        with gr.Column(scale=1):
-            fmt = gr.Radio(choices=["txt", "docx", "pdf"], value="txt", label="Format")
-            download_btn = gr.Button("Prepare download")
-            download_file = gr.File(label="Download", interactive=False)
+        download_btn = gr.Button("Prepare download", scale=1)
+        download_file = gr.File(label="Download", interactive=False, scale=2)
 
     detect_btn.click(
         detect_lines,
@@ -297,10 +350,10 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
     ocr_btn.click(
         run_ocr,
         inputs=[annotator, page_state, model_dd],
-        outputs=[transcription, status],
+        outputs=[rows_state, edits_state, status],
     )
     download_btn.click(
-        build_download, inputs=[transcription, fmt], outputs=[download_file]
+        build_download, inputs=[edits_state, fmt], outputs=[download_file]
     )
 
     gr.Markdown(CREDITS)
