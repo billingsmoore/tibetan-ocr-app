@@ -91,12 +91,20 @@ class DetectedPage:
 _line_detectors: Dict[str, LineDetection] = {}
 
 
-def _get_line_detector(model_path: str, patch_size: int) -> LineDetection:
-    """Return a cached LineDetection session; ONNX sessions are costly to build."""
-    key = f"{model_path}:{patch_size}"
+def _get_line_detector(
+    model_path: str, patch_size: int, providers: Sequence[str] | None = None
+) -> LineDetection:
+    """Return a cached LineDetection session; ONNX sessions are costly to build.
+
+    Keyed by providers too: a session built for CUDA cannot serve a CPU-only
+    request, so the two are cached side by side.
+    """
+    key = f"{model_path}:{patch_size}:{','.join(providers) if providers else 'default'}"
     if key not in _line_detectors:
         config = LineDetectionConfig(model_file=model_path, patch_size=patch_size)
-        _line_detectors[key] = LineDetection(get_platform(), config)
+        _line_detectors[key] = LineDetection(
+            get_platform(), config, providers=list(providers) if providers else None
+        )
     return _line_detectors[key]
 
 
@@ -119,6 +127,7 @@ def detect(
     merge_lines: bool = True,
     class_threshold: float = 0.9,
     fast: bool = True,
+    providers: Sequence[str] | None = None,
 ) -> DetectedPage:
     """Detect text lines on a page, stopping before any cropping or recognition.
 
@@ -161,7 +170,7 @@ def detect(
     else:
         small = image
 
-    detector = _get_line_detector(line_model, patch_size)
+    detector = _get_line_detector(line_model, patch_size, providers)
     line_mask = detector.predict(small, class_threshold=class_threshold)
 
     _, rot_mask, contours, angle = build_raw_line_data(small, line_mask)
@@ -191,6 +200,7 @@ def dewarp(
     line_model: str | None = None,
     patch_size: int = DEFAULT_PATCH_SIZE,
     tps_threshold: float = 0.25,
+    providers: Sequence[str] | None = None,
 ) -> Tuple[npt.NDArray, bool]:
     """Flatten a curved page so its text lines run straight.
 
@@ -223,7 +233,7 @@ def dewarp(
 
         line_model = line_model_path()
 
-    detector = _get_line_detector(line_model, patch_size)
+    detector = _get_line_detector(line_model, patch_size, providers)
     mask = detector.predict(image)
     rot_img, rot_mask, contours, _ = build_raw_line_data(image, mask)
     contours = filter_line_contours(rot_mask, contours)
@@ -353,18 +363,23 @@ _ocr_engines: Dict[str, OCRInference] = {}
 _converter = pyewts.pyewts()
 
 
-def _get_ocr_engine(model_dir: str | None) -> OCRInference:
-    """Return a cached OCRInference session for a model directory."""
+def _get_ocr_engine(
+    model_dir: str | None, providers: Sequence[str] | None = None
+) -> OCRInference:
+    """Return a cached OCRInference session, keyed by directory and providers."""
     if model_dir is None:
         from models import ocr_model_dir
 
         model_dir = ocr_model_dir()
-    if model_dir not in _ocr_engines:
+    key = f"{model_dir}:{','.join(providers) if providers else 'default'}"
+    if key not in _ocr_engines:
         model = import_local_model(model_dir)
         if model is None:
             raise ValueError(f"no model_config.json found in {model_dir!r}")
-        _ocr_engines[model_dir] = OCRInference(get_platform(), model.config)
-    return _ocr_engines[model_dir]
+        _ocr_engines[key] = OCRInference(
+            get_platform(), model.config, providers=list(providers) if providers else None
+        )
+    return _ocr_engines[key]
 
 
 def crop_lines(
@@ -386,6 +401,7 @@ def ocr(
     k_factor: float = 2.5,
     bbox_tolerance: float = 4.0,
     target_encoding: Encoding = Encoding.Unicode,
+    providers: Sequence[str] | None = None,
 ) -> List[str]:
     """Recognise text for each line, in the order given.
 
@@ -404,7 +420,7 @@ def ocr(
     if not lines:
         return []
 
-    engine = _get_ocr_engine(ocr_model)
+    engine = _get_ocr_engine(ocr_model, providers)
     line_images = crop_lines(page_image, lines, k_factor, bbox_tolerance)
 
     results: List[str] = []

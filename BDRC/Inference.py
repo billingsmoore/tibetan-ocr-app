@@ -73,13 +73,16 @@ class CTCDecoder:
 
 
 class Detection:
-    def __init__(self, platform: Platform, config: LineDetectionConfig | LayoutDetectionConfig):
+    def __init__(self, platform: Platform, config: LineDetectionConfig | LayoutDetectionConfig,
+                 providers: List[str] | None = None):
         self.platform = platform
         self.config = config
         self._config_file = config
         self._onnx_model_file = config.model_file
         self._patch_size = config.patch_size
-        self._execution_providers = get_execution_providers()
+        # A session binds to its providers when built, so callers that need to
+        # pin execution (e.g. falling back to CPU) pass them explicitly.
+        self._execution_providers = providers or get_execution_providers()
         self._inference = ort.InferenceSession(
             self._onnx_model_file, providers=self._execution_providers
         )
@@ -119,8 +122,9 @@ class Detection:
 
 
 class LineDetection(Detection):
-    def __init__(self, platform: Platform, config: LineDetectionConfig) -> None:
-        super().__init__(platform, config)
+    def __init__(self, platform: Platform, config: LineDetectionConfig,
+                 providers: List[str] | None = None) -> None:
+        super().__init__(platform, config, providers)
 
     def predict(self, image: npt.NDArray, class_threshold: float = 0.9) -> npt.NDArray:
         _, tiles, y_steps, pad_x, pad_y = self._preprocess_image(
@@ -227,7 +231,8 @@ class LayoutDetection(Detection):
 
 
 class OCRInference:
-    def __init__(self, platform: Platform, ocr_config: OCRModelConfig):
+    def __init__(self, platform: Platform, ocr_config: OCRModelConfig,
+                 providers: List[str] | None = None):
         self.platform = platform
         self.config = ocr_config
         self._onnx_model_file = ocr_config.model_file
@@ -238,7 +243,7 @@ class OCRInference:
         self._characters = ocr_config.charset
         self._squeeze_channel_dim = ocr_config.squeeze_channel
         self._swap_hw = ocr_config.swap_hw
-        self._execution_providers = get_execution_providers()
+        self._execution_providers = providers or get_execution_providers()
         self.ocr_session = ort.InferenceSession(
             self._onnx_model_file, providers=self._execution_providers
         )

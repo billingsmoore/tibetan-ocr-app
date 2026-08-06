@@ -25,12 +25,45 @@ import pipeline
 try:  # Only present on Hugging Face ZeroGPU Spaces.
     import spaces
 
-    on_gpu = spaces.GPU(duration=120)
+    HAS_ZEROGPU = True
 except ImportError:  # pragma: no cover - local and CPU deployments
+    spaces = None
+    HAS_ZEROGPU = False
 
-    def on_gpu(fn):
-        """No-op stand-in so the same code runs off-Space."""
-        return fn
+# ZeroGPU quota is finite and shared. When it runs out the call raises rather
+# than queueing, so every GPU entry point has an undecorated twin that reruns
+# the same work pinned to CPU -- slower, but the app keeps working.
+CPU_PROVIDERS = ["CPUExecutionProvider"]
+
+_QUOTA_HINTS = ("quota", "exceeded", "gpu task aborted", "no gpu is currently available")
+
+
+def _is_quota_error(exc: BaseException) -> bool:
+    """True when a GPU call failed for capacity reasons rather than a real bug."""
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(hint in text for hint in _QUOTA_HINTS)
+
+
+def _with_cpu_fallback(gpu_fn, cpu_fn):
+    """Try the GPU variant; on quota exhaustion rerun on CPU.
+
+    Returns ``(result, used_cpu)`` so the UI can say which path ran.
+    """
+
+    def run(*args):
+        if not HAS_ZEROGPU:
+            # No GPU in this environment at all -- CPU is simply the normal path,
+            # with default providers, so behaviour off-Space is unchanged.
+            return cpu_fn(*args, None), False
+        try:
+            return gpu_fn(*args, None), False
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it's quota
+            if not _is_quota_error(exc):
+                raise
+            print(f"[zerogpu] quota exhausted, falling back to CPU: {exc}")
+            return cpu_fn(*args, CPU_PROVIDERS), True
+
+    return run
 
 
 BOX_COLOR = (37, 150, 190)
@@ -98,20 +131,28 @@ def _clamp_upload(image: np.ndarray) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 
-@on_gpu
-def _detect_on_gpu(bgr: np.ndarray, flatten: bool, line_model: str):
+def _detect_work(bgr: np.ndarray, flatten: bool, line_model: str, providers):
     """Optionally flatten the page, then detect its lines."""
     changed = None
     if flatten:
-        bgr, changed = pipeline.dewarp(bgr, line_model=line_model)
-    page = pipeline.detect(bgr, line_model=line_model)
+        bgr, changed = pipeline.dewarp(bgr, line_model=line_model, providers=providers)
+    page = pipeline.detect(bgr, line_model=line_model, providers=providers)
     return page.image, page.angle, page.lines, changed
 
 
-@on_gpu
-def _ocr_on_gpu(image: np.ndarray, lines, ocr_model: str):
+def _ocr_work(image: np.ndarray, lines, ocr_model: str, providers):
     """Recognise the given lines."""
-    return pipeline.ocr(image, lines, ocr_model=ocr_model)
+    return pipeline.ocr(image, lines, ocr_model=ocr_model, providers=providers)
+
+
+if HAS_ZEROGPU:
+    _detect_gpu = spaces.GPU(duration=120)(_detect_work)
+    _ocr_gpu = spaces.GPU(duration=120)(_ocr_work)
+else:  # pragma: no cover - the dispatcher never calls these off-Space
+    _detect_gpu = _ocr_gpu = None
+
+run_detect = _with_cpu_fallback(_detect_gpu, _detect_work)
+run_ocr_work = _with_cpu_fallback(_ocr_gpu, _ocr_work)
 
 
 # --------------------------------------------------------------------------- #
@@ -137,13 +178,15 @@ def detect_lines(
 
     progress(0.4, desc="Detecting lines")
     try:
-        image, angle, lines, changed = _detect_on_gpu(bgr, flatten, line_model)
+        (image, angle, lines, changed), used_cpu = run_detect(bgr, flatten, line_model)
     except ValueError as exc:
         raise gr.Error(f"Line detection failed: {exc}")
 
     note = ""
     if changed is not None:
         note = " Page was flattened." if changed else " Page looked flat already."
+    if used_cpu:
+        note += " (GPU quota spent — ran on CPU, slower.)"
 
     boxes = pipeline.lines_to_boxes(lines)
     state = {"image": image, "lines": lines, "ids": [b["id"] for b in boxes]}
@@ -180,7 +223,7 @@ def run_ocr(
 
     ocr_model = models.ocr_model_dir(model_name)  # outside the GPU call
     progress(0.3, desc=f"Transcribing {len(lines)} lines")
-    texts = _ocr_on_gpu(state["image"], lines, ocr_model)
+    texts, used_cpu = run_ocr_work(state["image"], lines, ocr_model)
 
     # Crop the same lines again on the CPU so each text row can show the strip of
     # page it came from. Cropping is cheap next to recognition, and this keeps
@@ -193,7 +236,8 @@ def run_ocr(
     ]
 
     progress(1.0, desc="Done")
-    return rows, list(texts), f"Transcribed {len(texts)} lines. Edit freely below."
+    note = " (GPU quota spent — ran on CPU, slower.)" if used_cpu else ""
+    return rows, list(texts), f"Transcribed {len(texts)} lines.{note} Edit freely below."
 
 
 def build_download(edits: Optional[List[str]], fmt: str):
