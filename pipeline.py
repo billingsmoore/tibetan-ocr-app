@@ -407,6 +407,25 @@ def crop_lines(
     return extract_line_images(page_image, list(lines), k_factor, bbox_tolerance)
 
 
+def line_previews(
+    page_image: npt.NDArray, lines: Sequence[Line], pad: int = 6
+) -> List[npt.NDArray]:
+    """Plain rectangular crops of each line, for showing to a person.
+
+    Distinct from :func:`crop_lines`, which masks everything outside the line's
+    contour -- correct for feeding the recogniser, but it leaves black wedges
+    around slanted text that read as damage when a human looks at the strip.
+    """
+    height, width = page_image.shape[:2]
+    previews = []
+    for line in lines:
+        box = line.bbox
+        top, bottom = max(0, box.y - pad), min(height, box.y + box.h + pad)
+        left, right = max(0, box.x - pad), min(width, box.x + box.w + pad)
+        previews.append(page_image[top:bottom, left:right])
+    return previews
+
+
 def ocr(
     page_image: npt.NDArray,
     lines: Sequence[Line],

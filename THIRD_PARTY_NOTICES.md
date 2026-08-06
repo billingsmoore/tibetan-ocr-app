@@ -28,5 +28,8 @@ Fetched from the Hugging Face Hub on first use:
 
 - [BDRC/PhotiLines](https://huggingface.co/BDRC/PhotiLines) — line segmentation, CC-BY-4.0
 - [BDRC/Woodblock](https://huggingface.co/BDRC/Woodblock) — Tibetan OCR
+- [billingsmoore/mlotsawa-ground-base](https://huggingface.co/billingsmoore/mlotsawa-ground-base) — Tibetan→English translation
 
-Both © Buddhist Digital Resource Center. This repository ships no model weights.
+The two detection/OCR models are © Buddhist Digital Resource Center; the
+translation model comes from the MLotsawa project. This repository ships no
+model weights.

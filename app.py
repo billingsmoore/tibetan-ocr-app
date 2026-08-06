@@ -21,6 +21,7 @@ from gradio_image_annotation import image_annotator
 import export
 import models
 import pipeline
+import translate
 
 try:  # Only present on Hugging Face ZeroGPU Spaces.
     import spaces
@@ -44,8 +45,12 @@ def _is_quota_error(exc: BaseException) -> bool:
     return any(hint in text for hint in _QUOTA_HINTS)
 
 
-def _with_cpu_fallback(gpu_fn, cpu_fn):
+def _with_cpu_fallback(gpu_fn, cpu_fn, gpu_extra=(None,), cpu_extra=(CPU_PROVIDERS,)):
     """Try the GPU variant; on quota exhaustion rerun on CPU.
+
+    ``gpu_extra``/``cpu_extra`` are appended to the call, which is how the ONNX
+    paths pin their execution providers. Torch-based work passes empty tuples
+    and picks its own device.
 
     Returns ``(result, used_cpu)`` so the UI can say which path ran.
     """
@@ -54,20 +59,24 @@ def _with_cpu_fallback(gpu_fn, cpu_fn):
         if not HAS_ZEROGPU:
             # No GPU in this environment at all -- CPU is simply the normal path,
             # with default providers, so behaviour off-Space is unchanged.
-            return cpu_fn(*args, None), False
+            return cpu_fn(*args, *(None,) * len(gpu_extra)), False
         try:
-            return gpu_fn(*args, None), False
+            return gpu_fn(*args, *gpu_extra), False
         except Exception as exc:  # noqa: BLE001 - re-raised unless it's quota
             if not _is_quota_error(exc):
                 raise
             print(f"[zerogpu] quota exhausted, falling back to CPU: {exc}")
-            return cpu_fn(*args, CPU_PROVIDERS), True
+            return cpu_fn(*args, *cpu_extra), True
 
     return run
 
 
 BOX_COLOR = (37, 150, 190)
 MAX_UPLOAD_PIXELS = 40_000_000  # ~40MP; bigger inputs are downscaled on ingest
+
+INTERLINEAR = "Interlinear (image + Tibetan + English)"
+TRANSCRIPTION_ONLY = "Transcription only"
+TRANSLATION_ONLY = "Translation only"
 
 
 # --------------------------------------------------------------------------- #
@@ -146,14 +155,24 @@ def _ocr_work(image: np.ndarray, lines, ocr_model: str, providers):
     return pipeline.ocr(image, lines, ocr_model=ocr_model, providers=providers)
 
 
+def _translate_work(texts):
+    """Translate Tibetan lines to English."""
+    return translate.translate_batch(texts)
+
+
 if HAS_ZEROGPU:
     _detect_gpu = spaces.GPU(duration=120)(_detect_work)
     _ocr_gpu = spaces.GPU(duration=120)(_ocr_work)
+    _translate_gpu = spaces.GPU(duration=120)(_translate_work)
 else:  # pragma: no cover - the dispatcher never calls these off-Space
-    _detect_gpu = _ocr_gpu = None
+    _detect_gpu = _ocr_gpu = _translate_gpu = None
 
 run_detect = _with_cpu_fallback(_detect_gpu, _detect_work)
 run_ocr_work = _with_cpu_fallback(_ocr_gpu, _ocr_work)
+# Torch selects its own device, so no provider argument is threaded through.
+run_translate = _with_cpu_fallback(
+    _translate_gpu, _translate_work, gpu_extra=(), cpu_extra=()
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -235,7 +254,7 @@ def run_ocr(
     # page it came from. Cropping is cheap next to recognition, and this keeps
     # large image data out of the GPU call's return value.
     progress(0.9, desc="Preparing line previews")
-    crops = pipeline.crop_lines(state["image"], lines)
+    crops = pipeline.line_previews(state["image"], lines)
     rows = [
         {"text": text, "crop": cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)}
         for text, crop in zip(texts, crops)
@@ -246,14 +265,61 @@ def run_ocr(
     return rows, list(texts), f"Transcribed {len(texts)} lines.{note} Edit freely below."
 
 
-def build_download(edits: Optional[List[str]], fmt: str):
-    """Write the edited transcription to a temp file for download."""
-    text = "\n".join(edits or [])
+def translate_line(text: str, index: int, translations: Optional[List[str]]):
+    """Translate one line and store the result alongside the others."""
+    if not (text or "").strip():
+        raise gr.Error("Nothing to translate on this line.")
+
+    try:
+        results, used_cpu = run_translate([text])
+    except Exception as exc:  # noqa: BLE001 - surfaced to the user as-is
+        raise gr.Error(f"Translation failed: {exc}")
+
+    english = results[0] if results else ""
+    updated = list(translations or [])
+    while len(updated) <= index:
+        updated.append("")
+    updated[index] = english
+
+    note = " (GPU quota spent — ran on CPU.)" if used_cpu else ""
+    return english, updated, f"Translated line {index + 1}.{note}"
+
+
+def build_download(
+    edits: Optional[List[str]],
+    translations: Optional[List[str]],
+    rows: Optional[List[dict]],
+    content: str,
+    fmt: str,
+):
+    """Write the chosen content to a temp file for download."""
+    if content == INTERLINEAR:
+        if not rows:
+            raise gr.Error("Transcribe the page first.")
+        items = [
+            {
+                "crop": row.get("crop"),
+                "source": (edits or [])[i] if i < len(edits or []) else row.get("text", ""),
+                "target": (translations or [])[i] if i < len(translations or []) else "",
+            }
+            for i, row in enumerate(rows)
+        ]
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".pdf", prefix="interlinear_"
+        )
+        tmp.close()
+        return export.to_interlinear_pdf(items, tmp.name)
+
+    if content == TRANSLATION_ONLY:
+        lines, prefix = translations or [], "translation_"
+    else:
+        lines, prefix = edits or [], "transcription_"
+
+    text = "\n".join(lines)
     if not text.strip():
         raise gr.Error("Nothing to download yet.")
-    tmp = tempfile.NamedTemporaryFile(
-        delete=False, suffix=f".{fmt}", prefix="transcription_"
-    )
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{fmt}", prefix=prefix)
     tmp.close()
     return export.export(text, fmt, tmp.name)
 
@@ -285,6 +351,7 @@ CSS = """
 .line-strip img { object-fit: contain; width: 100%; background: transparent; }
 .line-strip { margin-bottom: 2px; opacity: 0.85; }
 .line-strip:hover { opacity: 1; }
+.translation-field textarea { font-style: italic; opacity: 0.9; }
 """
 
 CREDITS = """
@@ -295,10 +362,11 @@ This app is a thin interactive layer over models and code created by others.
 | | |
 |---|---|
 | **OCR pipeline & models** | [Buddhist Digital Resource Center](https://www.bdrc.io) — forked from [tibetan-ocr-app](https://github.com/buda-base/tibetan-ocr-app) (MIT). Line segmentation by [BDRC/PhotiLines](https://huggingface.co/BDRC/PhotiLines), recognition by [BDRC/Woodblock](https://huggingface.co/BDRC/Woodblock). Models trained on transcriptions from BDRC, [ALL](https://asianlegacylibrary.org/), [Adarsha](https://adarshah.org/) and [NorbuKetaka](http://purl.bdrc.io/resource/PR1ER1). |
+| **Translation model** | [billingsmoore/mlotsawa-ground-base](https://huggingface.co/billingsmoore/mlotsawa-ground-base), a Tibetan→English seq2seq model from the [MLotsawa](https://github.com/billingsmoore/MLotsawa) project |
 | **Box editor** | [gradio-image-annotation](https://github.com/edgarGracia/gradio_image_annotator) by Edgar Gracia (MIT) |
 | **Wylie ↔ Unicode** | [pyewts](https://github.com/Esukhia/pyewts) by the Esukhia development team (Apache-2.0) |
 | **Tibetan font** | Tibetan Machine Uni, embedded in exported PDFs (GPL with font exception) |
-| **Framework & libraries** | [Gradio](https://gradio.app) (Apache-2.0), [ONNX Runtime](https://onnxruntime.ai) (MIT), [OpenCV](https://opencv.org) (Apache-2.0), [pyctcdecode](https://github.com/kensho-technologies/pyctcdecode) (Apache-2.0), [thin-plate-spline](https://pypi.org/project/thin-plate-spline/) (MIT), [python-docx](https://github.com/python-openxml/python-docx) (MIT), [ReportLab](https://www.reportlab.com) (BSD) |
+| **Framework & libraries** | [Gradio](https://gradio.app) (Apache-2.0), [ONNX Runtime](https://onnxruntime.ai) (MIT), [OpenCV](https://opencv.org) (Apache-2.0), [pyctcdecode](https://github.com/kensho-technologies/pyctcdecode) (Apache-2.0), [thin-plate-spline](https://pypi.org/project/thin-plate-spline/) (MIT), [Transformers](https://github.com/huggingface/transformers) (Apache-2.0), [PyTorch](https://pytorch.org) (BSD), [python-docx](https://github.com/python-openxml/python-docx) (MIT), [ReportLab](https://www.reportlab.com) (BSD) |
 
 Full terms in [THIRD_PARTY_NOTICES.md](https://github.com/billingsmoore/tibetan-ocr-app/blob/interactive-ui/THIRD_PARTY_NOTICES.md).
 The heavy lifting here is BDRC's; please credit them in any work that uses this.
@@ -350,6 +418,7 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
     # steal focus mid-word.
     rows_state = gr.State([])
     edits_state = gr.State([])
+    trans_state = gr.State([])
 
     @gr.render(inputs=rows_state)
     def render_transcription(rows):
@@ -367,17 +436,31 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
                     height=54,
                     elem_classes=["line-strip"],
                 )
-                box = gr.Textbox(
-                    value=row["text"],
+                with gr.Row():
+                    box = gr.Textbox(
+                        value=row["text"],
+                        show_label=False,
+                        container=False,
+                        lines=1,
+                        max_lines=4,
+                        autoscroll=False,
+                        # Explicit: inside gr.render Gradio does not infer
+                        # interactivity from usage, so a Textbox given a value
+                        # renders read-only unless told otherwise.
+                        interactive=True,
+                        scale=9,
+                    )
+                    translate_btn = gr.Button("Translate", size="sm", scale=1)
+                english = gr.Textbox(
+                    value="",
                     show_label=False,
                     container=False,
                     lines=1,
                     max_lines=4,
                     autoscroll=False,
-                    # Explicit: inside gr.render Gradio does not infer
-                    # interactivity from usage, so a Textbox given a value
-                    # renders read-only unless told otherwise.
                     interactive=True,
+                    placeholder="English translation",
+                    elem_classes=["translation-field"],
                 )
 
             def save(new_text, edits, idx=index):
@@ -387,14 +470,43 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
                 edits[idx] = new_text
                 return edits
 
+            def save_translation(new_text, translations, idx=index):
+                translations = list(translations or [])
+                while len(translations) <= idx:
+                    translations.append("")
+                translations[idx] = new_text
+                return translations
+
             box.change(save, inputs=[box, edits_state], outputs=[edits_state])
+            english.change(
+                save_translation, inputs=[english, trans_state], outputs=[trans_state]
+            )
+            translate_btn.click(
+                lambda text, translations, idx=index: translate_line(
+                    text, idx, translations
+                ),
+                inputs=[box, trans_state],
+                outputs=[english, trans_state, status],
+            )
 
     with gr.Row():
+        content = gr.Radio(
+            choices=[INTERLINEAR, TRANSCRIPTION_ONLY, TRANSLATION_ONLY],
+            value=TRANSCRIPTION_ONLY,
+            label="Content",
+            scale=3,
+        )
         fmt = gr.Radio(
             choices=["txt", "docx", "pdf"], value="txt", label="Format", scale=2
         )
         download_btn = gr.Button("Prepare download", scale=1)
         download_file = gr.File(label="Download", interactive=False, scale=2)
+
+    def _format_visibility(choice):
+        # Interlinear embeds the line strips, so it only makes sense as a PDF.
+        return gr.update(visible=choice != INTERLINEAR)
+
+    content.change(_format_visibility, inputs=[content], outputs=[fmt])
 
     detect_btn.click(
         detect_lines,
@@ -407,7 +519,9 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
         outputs=[rows_state, edits_state, status],
     )
     download_btn.click(
-        build_download, inputs=[edits_state, fmt], outputs=[download_file]
+        build_download,
+        inputs=[edits_state, trans_state, rows_state, content, fmt],
+        outputs=[download_file],
     )
 
     gr.Markdown(CREDITS)

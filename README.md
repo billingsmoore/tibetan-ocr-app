@@ -11,6 +11,7 @@ license: mit
 models:
   - BDRC/PhotiLines
   - BDRC/Woodblock
+  - billingsmoore/mlotsawa-ground-base
 ---
 
 # Tibetan Page Transcription
@@ -29,7 +30,9 @@ between the halves.
 3. **Correct them** — drag to draw a missing line, use the handles to resize,
    select and press Delete to remove a spurious one.
 4. **Transcribe** — only the boxes you confirmed are recognised.
-5. **Edit and download** as `.txt`, `.docx` or `.pdf`.
+5. **Translate** any line into English, and edit that too.
+6. **Download** the transcription, the translation, or an interlinear PDF
+   pairing each line's image with both.
 
 ## Layout
 
@@ -37,7 +40,8 @@ between the halves.
 app.py           Gradio UI and step handlers
 pipeline.py      detect() / dewarp() / ocr() — the interactive split
 models.py        lazy model fetching from the Hub
-export.py        txt, docx and pdf writers
+translate.py     Tibetan -> English seq2seq translation
+export.py        txt, docx, pdf and interlinear-pdf writers
 Config.py        string -> enum tables
 BDRC/            upstream inference code (6 modules, unmodified except as noted)
 Assets/Fonts/    TibMachUni, embedded into generated PDFs
@@ -93,6 +97,7 @@ use and cached:
 |---|---|
 | Line segmentation | [BDRC/PhotiLines](https://huggingface.co/BDRC/PhotiLines) |
 | OCR | [BDRC/Woodblock](https://huggingface.co/BDRC/Woodblock) |
+| Translation | [billingsmoore/mlotsawa-ground-base](https://huggingface.co/billingsmoore/mlotsawa-ground-base) |
 
 `BDRC/Woodblock` is currently the only BDRC OCR repo whose `model_config.json`
 carries every key the config reader needs — the others omit `add_blank`, and
