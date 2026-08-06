@@ -212,6 +212,31 @@ Delete to remove one. Detection often boxes a smudge in the margin -- deleting
 those before transcribing keeps the output clean.
 """
 
+# A pecha page is roughly 4:1, so its displayed height is width/4 -- the page
+# needs the full column width to be legible, and a fixed height alone would do
+# nothing. The drag handle lets you trade height against the rest of the page.
+CSS = """
+#page-pane { resize: vertical; overflow: auto; min-height: 260px; }
+#page-pane img { image-rendering: -webkit-optimize-contrast; }
+"""
+
+CREDITS = """
+### Built on other people's work
+
+This app is a thin interactive layer over models and code created by others.
+
+| | |
+|---|---|
+| **OCR pipeline & models** | [Buddhist Digital Resource Center](https://www.bdrc.io) — forked from [tibetan-ocr-app](https://github.com/buda-base/tibetan-ocr-app) (MIT). Line segmentation by [BDRC/PhotiLines](https://huggingface.co/BDRC/PhotiLines), recognition by [BDRC/Woodblock](https://huggingface.co/BDRC/Woodblock). Models trained on transcriptions from BDRC, [ALL](https://asianlegacylibrary.org/), [Adarsha](https://adarshah.org/) and [NorbuKetaka](http://purl.bdrc.io/resource/PR1ER1). |
+| **Box editor** | [gradio-image-annotation](https://github.com/edgarGracia/gradio_image_annotator) by Edgar Gracia (MIT) |
+| **Wylie ↔ Unicode** | [pyewts](https://github.com/Esukhia/pyewts) by the Esukhia development team (Apache-2.0) |
+| **Tibetan font** | Tibetan Machine Uni, embedded in exported PDFs (GPL with font exception) |
+| **Framework & libraries** | [Gradio](https://gradio.app) (Apache-2.0), [ONNX Runtime](https://onnxruntime.ai) (MIT), [OpenCV](https://opencv.org) (Apache-2.0), [pyctcdecode](https://github.com/kensho-technologies/pyctcdecode) (Apache-2.0), [thin-plate-spline](https://pypi.org/project/thin-plate-spline/) (MIT), [python-docx](https://github.com/python-openxml/python-docx) (MIT), [ReportLab](https://www.reportlab.com) (BSD) |
+
+Full terms in [THIRD_PARTY_NOTICES.md](https://github.com/billingsmoore/tibetan-ocr-app/blob/interactive-ui/THIRD_PARTY_NOTICES.md).
+The heavy lifting here is BDRC's; please credit them in any work that uses this.
+"""
+
 with gr.Blocks(title="Tibetan Page Transcription") as demo:
     page_state = gr.State()
 
@@ -235,33 +260,33 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
 
     status = gr.Markdown("Upload a page image to begin.")
 
+    annotator = image_annotator(
+        label="Page (detected lines) — drag the bottom edge to resize",
+        elem_id="page-pane",
+        image_type="numpy",
+        sources=["upload", "clipboard"],
+        box_min_size=5,
+        handle_size=10,
+        box_thickness=2,
+        disable_edit_boxes=True,  # boxes carry index labels; keep them stable
+        show_remove_button=True,  # deleting a spurious box is a core action
+        show_download_button=False,
+        show_share_button=False,
+        height=560,
+    )
+
     with gr.Row():
-        annotator = image_annotator(
-            label="Page (detected lines)",
-            image_type="numpy",
-            sources=["upload", "clipboard"],
-            box_min_size=5,
-            handle_size=10,
-            box_thickness=2,
-            disable_edit_boxes=True,  # boxes carry index labels; keep them stable
-            show_remove_button=True,  # deleting a spurious box is a core action
-            show_download_button=False,
-            show_share_button=False,
+        transcription = gr.Textbox(
+            label="Transcription (editable) — one row per detected line",
+            lines=16,
+            max_lines=40,
+            buttons=["copy"],
+            placeholder="Transcribed text appears here, one row per line.",
             scale=3,
         )
-        with gr.Column(scale=2):
-            transcription = gr.Textbox(
-                label="Transcription (editable)",
-                lines=22,
-                max_lines=40,
-                buttons=["copy"],
-                placeholder="Transcribed text appears here, one row per line.",
-            )
-            with gr.Row():
-                fmt = gr.Radio(
-                    choices=["txt", "docx", "pdf"], value="txt", label="Format", scale=2
-                )
-                download_btn = gr.Button("Prepare download", scale=1)
+        with gr.Column(scale=1):
+            fmt = gr.Radio(choices=["txt", "docx", "pdf"], value="txt", label="Format")
+            download_btn = gr.Button("Prepare download")
             download_file = gr.File(label="Download", interactive=False)
 
     detect_btn.click(
@@ -278,6 +303,8 @@ with gr.Blocks(title="Tibetan Page Transcription") as demo:
         build_download, inputs=[transcription, fmt], outputs=[download_file]
     )
 
+    gr.Markdown(CREDITS)
+
 
 if __name__ == "__main__":
     # Warm the Hub cache so the first user doesn't pay the model download.
@@ -287,5 +314,7 @@ if __name__ == "__main__":
         print(f"[warn] model prefetch failed, will fetch on demand: {exc}")
 
     demo.queue(max_size=8).launch(
-        server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860))
+        server_name="0.0.0.0",
+        server_port=int(os.environ.get("PORT", 7860)),
+        css=CSS,  # Gradio 6 takes css here, not on Blocks
     )
