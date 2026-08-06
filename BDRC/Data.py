@@ -10,8 +10,12 @@ from uuid import UUID
 from enum import Enum
 import numpy.typing as npt
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
-from PySide6.QtGui import QImage
+from typing import Any, Dict, List, Tuple
+
+try:  # Qt is only needed by the desktop GUI; keep this module importable headless.
+    from PySide6.QtGui import QImage
+except ImportError:  # pragma: no cover
+    QImage = Any
 
 class OpStatus(Enum):
     """Operation status indicators for various OCR operations."""

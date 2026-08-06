@@ -38,11 +38,13 @@ def run_tps(image: npt.NDArray, input_pts, output_pts, add_corners=True, alpha=0
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
         height, width, _ = image.shape
 
-    input_pts = npt.NDArray(input_pts)
-    output_pts = npt.NDArray(output_pts)
+    # npt.NDArray is a typing alias, not a constructor: calling it raises. And the
+    # corner scaling was applied twice, squaring it. Both fixed here.
+    input_pts = np.asarray(input_pts, dtype=np.float64)
+    output_pts = np.asarray(output_pts, dtype=np.float64)
 
     if add_corners:
-        corners = npt.NDArray(  # Add corners ctrl points
+        corners = np.array(  # Add corners ctrl points
         [
             [0.0, 0.0],
             [1.0, 0.0],
@@ -50,7 +52,6 @@ def run_tps(image: npt.NDArray, input_pts, output_pts, add_corners=True, alpha=0
             [1.0, 1.0],
         ])
 
-        corners *= [height, width]
         corners *= [height, width]
 
         input_pts = np.concatenate((input_pts, corners))

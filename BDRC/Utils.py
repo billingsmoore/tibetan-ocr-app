@@ -31,8 +31,11 @@ from typing import List, Tuple, Optional, Sequence
 
 from BDRC.Data import OCRModelConfig, Platform, ScreenData, BBox, Line, \
     OCRModel, OCRData
-from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QImage, Qt
+try:  # Qt is only needed by the desktop GUI; keep this module importable headless.
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QImage, Qt
+except ImportError:  # pragma: no cover
+    QApplication = QImage = Qt = None
 
 from Config import OCRARCHITECTURE, CHARSETENCODER
 

@@ -1,39 +1,21 @@
-attrs
-certifi
-charset-normalizer
-colorama
-coloredlogs
-filelock
-flatbuffers
-fsspec
-humanfriendly
-hypothesis
-idna
-mpmath
-numpy
-onnxruntime
-opencv-python
-ordered-set
-pillow
-protobuf
-pyctcdecode
-pyewts
-pygtrie
-pyreadline3
-PySide6
-PySide6_Addons
-PySide6_Essentials
-PyYAML
-requests
-scipy
-shiboken6
-sortedcontainers
-sympy
-thin-plate-spline
-tqdm
-typing_extensions
-urllib3
-zstandard
-pdf2image
-platformdirs
-pypdf
+# Dependencies for the Gradio web app (app.py).
+# The upstream desktop GUI's requirements are preserved in requirements-desktop.txt.
+
+gradio>=6.0
+gradio_image_annotation>=0.5
+huggingface_hub>=0.30
+
+onnxruntime>=1.17
+opencv-python-headless>=4.9
+numpy>=1.26
+scipy>=1.11
+pyctcdecode>=0.5
+thin-plate-spline>=1.0
+
+python-docx>=1.1
+reportlab>=4.0
+
+# pyewts is deliberately absent: its sdist imports pkg_resources at build time,
+# which setuptools 81+ removed, so pip cannot build it in a current environment.
+# It is pure Python and Apache-2.0, so it is vendored under vendor/.
+# See THIRD_PARTY_NOTICES.md.

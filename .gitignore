@@ -176,3 +176,9 @@ Models
 OCRModels
 download_models.py
 poppler*/
+verify_out/
+
+# Models are fetched from the Hugging Face Hub at runtime, never committed.
+*.onnx
+*.onnx.data
+*.pth

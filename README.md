@@ -1,94 +1,117 @@
-# BDRC Tibetan OCR desktop app
+---
+title: Tibetan Page Transcription
+emoji: 📜
+colorFrom: yellow
+colorTo: red
+sdk: gradio
+sdk_version: 6.22.0
+app_file: app.py
+pinned: false
+license: mit
+models:
+  - BDRC/PhotiLines
+  - BDRC/Woodblock
+---
 
-This app is a free and open source desktop app that can be installed on a local compter to run Tibetan OCR on batches of images (including in PDFs). It was developed by Eric Werner for the [Buddhist Digital Resource Center](https://www.bdrc.io) and uses the pipeline developed during the BDRC OCR Project.
+# Tibetan Page Transcription
 
-### Main features
+Upload a page of Tibetan text, **correct the detected lines by hand**, then
+transcribe and edit the result.
 
-The app can open one or multiple files and run OCR on them. It can export plain text or [PageXML](https://github.com/PRImA-Research-Lab/PAGE-XML) (a format it shares with [Transkribus](https://www.transkribus.org/)).
+Line detection is good but not perfect: it boxes smudges in the margin, and
+occasionally splits or misses a line. A wrong box produces wrong text silently,
+so this app deliberately splits the pipeline in two and puts an editable overlay
+between the halves.
 
-It can also optionally dewarp images as well as convert the output to Wylie.
+1. **Upload** a page image.
+2. **Detect lines** — boxes appear over the deskewed page. Tick *Flatten curved
+   page* first if the photo bows.
+3. **Correct them** — drag to draw a missing line, use the handles to resize,
+   select and press Delete to remove a spurious one.
+4. **Transcribe** — only the boxes you confirmed are recognised.
+5. **Edit and download** as `.txt`, `.docx` or `.pdf`.
 
-Instead of providing one model that can handle all styles of Tibetan writing, we provide a few different models that we encourage users to experiment with to see what fits their data best.
-
-The models it uses are based on transcriptions available online, from BDRC, [ALL](https://asianlegacylibrary.org/), [Adarsha](https://adarshah.org/), and [NorbuKetaka](http://purl.bdrc.io/resource/PR1ER1), as well as transcriptions made during the project.
-
-See the Huggingface accounts of [BDRC](https://huggingface.co/BDRC) and [OpenPecha](https://huggingface.co/openpecha) for the open access part of our data as well as the models, and the following for the training code:
-
-- https://github.com/buda-base/tibetan-ocr-training
-- https://github.com/buda-base/tibetan-ocr-evaluation
-
-### Installation and running
-
-##### Windows
-
-1. Download and unzip https://github.com/buda-base/tibetan-ocr-app/releases/download/v0.3.0/bdrc_ocr_windows_x64_0.3.zip
-2. Run the `.exe`
-
-##### OSX
-
-This app has packages for MacOS X on both Intel (x64) processors and Silicon/ARM (M1, M2, etc.) processors available.
-
-1. Download and unzip
-
-- For recent hardware (M1, M2, etc.): https://github.com/buda-base/tibetan-ocr-app/releases/download/v0.3.0/bdrc_ocr_macos_arm64_0.3.zip
-- For older x64 (Intel) processors: https://github.com/buda-base/tibetan-ocr-app/releases/download/v0.3.0/bdrc_ocr_macos_x64_0.3.zip
-
-2. Run the app
-
-##### From source (advanced users)
-
-1. Make sure you have [Git LFS](https://git-lfs.com) installed
-2. Clone the Github repository: `git clone https://github.com/buda-base/tibetan-ocr-app.git`
-3. Run `git lfs pull` to download all LFS files
-4. Install dependencies with `pip install -r requirements.txt` (requires at least Python 3.10)
-5. Install Poppler with `python scripts/install_poppler.py`
-6. Run `pyside6-rcc resources.qrc -o resources.py`
-7. Download the OCR models with `curl -L https://github.com/buda-base/tibetan-ocr-app/releases/download/v0.1/bdrc_ocr_models_1.0.zip`
-8. Extract the OCR models ZIP archive into a new `OCRModels` directory.
-9. Run `python main.py`
-
-### OCR Models
-
-The application comes with pre-installed OCR models that are ready to use. These models are automatically loaded when you start the application.
-
-If you want to use different models:
-
-1. Download and unzip the models in a directory of your choice
-2. Open the app, click on the setting icon, click on "import models" and select the `ORCModels/` folder where you extracted the model zip file. Warning! Do not select one of its subfolders (like `Woodblock/`, etc.).
-3. The app will immediately start using these custom models.
-
-At that stage we advise you to try the app on a few images. If you're not satisfied with the result, please try setting the "bbox tolerance" setting value to `3.5` or `2.5` and see if it improves the results.
-
-### Building distribution packages
-
-1. `pip install nuitka`
-2. (optional) install `ccache` to speed up the compilation (on OSX this can be done through homebrew)
-3. run the nuitka command given in main.py that corresponds to your OS
-4. zip the files in the corresponding build folder
-
-### Troubleshooting
-
-#### PDF Processing Issues
-
-If you encounter issues with PDF processing, it might be related to Poppler:
-
-1. Make sure Poppler is properly installed using the script provided: `python scripts/install_poppler.py`
-2. Verify that the Poppler binaries are in the correct location:
-   - Windows: Check that `poppler/bin/pdfinfo.exe` exists
-   - macOS/Linux: Check that `poppler/bin/pdfinfo` exists
-3. If you installed Poppler manually, make sure the application can find it:
-   - Windows: Add the Poppler `bin` directory to your PATH
-   - macOS: If using Homebrew, run `brew info poppler` to check the installation path
-   - Linux: Ensure `poppler-utils` is installed
-
-#### Missing Dependencies
-
-If you get errors about missing Python modules, make sure you've installed all requirements:
+## Layout
 
 ```
-pip install -r requirements.txt
+app.py           Gradio UI and step handlers
+pipeline.py      detect() / dewarp() / ocr() — the interactive split
+models.py        lazy model fetching from the Hub
+export.py        txt, docx and pdf writers
+Config.py        string -> enum tables
+BDRC/            upstream inference code (6 modules, unmodified except as noted)
+Assets/Fonts/    TibMachUni, embedded into generated PDFs
+vendor/pyewts/   vendored EWTS <-> Unicode converter
+examples/        a sample pecha page
 ```
 
-### Acknowledgements
+## How it works
 
-Our gratitude goes to Jérémy Frère for the OSX packaging and Pentsok W. Rtsang for the translations into Tibetan.
+A fork of BDRC's [tibetan-ocr-app](https://github.com/buda-base/tibetan-ocr-app),
+reduced to its inference core. Upstream's `OCRPipeline.run_ocr()` runs detection,
+cropping and recognition in one call, leaving nowhere to intervene; `pipeline.py`
+cuts it at its natural seam — the sorted list of `Line` objects — into `detect()`
+and `ocr()`.
+
+Three details make the round-trip work:
+
+- **Cropping uses contours, not boxes.** `extract_line_images` crops through
+  `line.contour`, which hugs the glyph shape and handles slanted text better
+  than a rectangle. So a box you *didn't* touch keeps its original contour;
+  only boxes you moved, resized or drew become rectangles.
+- **Detection runs downscaled, cropping runs full-size.** The detector pads its
+  input to a whole grid of 512px tiles, so cost is quantised by tile count, not
+  pixels. A 3500×912 page is 14 tiles; at half scale it is 4, a ~3.5× speedup
+  that finds the same lines. Boxes are then projected back to full resolution,
+  because the recogniser wants ~100px-tall text. This is exact, not approximate:
+  deskew rotates about the image centre at unchanged size, so scaling commutes
+  with it.
+- **Dewarping is a separate preprocessing step,** not a flag inside `detect()`.
+  A non-linear warp cannot be projected back from a downscaled copy the way a
+  rotation can, so `dewarp()` runs at full resolution and detection simply runs
+  afterwards on its output. It only fires when a line's vertical deviation
+  exceeds its own height.
+
+### Changes to upstream code
+
+`BDRC/` is upstream's, with two deliberate edits:
+
+- `Data.py`, `Utils.py` — Qt imports made optional, so the inference code runs
+  headless without PySide6.
+- `image_dewarping.py` — fixed `run_tps`, which called `npt.NDArray(...)` as if
+  it were a constructor (it is a typing alias, so every call raised) and applied
+  its corner scaling twice. Dewarping could not have worked upstream; `run_ocr`
+  swallowed the exception into a generic "Line processing failed". On a page
+  bowed by 90px this now removes 85% of the distortion.
+
+## Models
+
+No weights are stored in this repository. They are fetched from the Hub on first
+use and cached:
+
+| Purpose | Model |
+|---|---|
+| Line segmentation | [BDRC/PhotiLines](https://huggingface.co/BDRC/PhotiLines) |
+| OCR | [BDRC/Woodblock](https://huggingface.co/BDRC/Woodblock) |
+
+`BDRC/Woodblock` is currently the only BDRC OCR repo whose `model_config.json`
+carries every key the config reader needs — the others omit `add_blank`, and
+guessing that flag wrong corrupts CTC decoding into plausible-looking garbage
+rather than raising. Add them to `OCR_MODEL_REPOS` in `models.py` once their
+configs are complete.
+
+## Running locally
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python app.py          # http://localhost:7860
+```
+
+`verify_pipeline.py` is a smoke test: it runs the full chain on
+`examples/I1ER9510006.jpg` and writes an overlay image plus the boxes as JSON.
+
+## Licensing
+
+MIT, inherited from upstream. Vendored and downloaded components carry their own
+terms — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
